@@ -106,6 +106,7 @@ export default {
         "float": "float 3s ease-in-out infinite",
         "fade-in-up": "fade-in-up 0.5s ease-out forwards",
         "spin-slow": "spin-slow 2s linear infinite",
+        "confetti-fall": "confetti-fall 3s ease-in forwards",
       },
     },
   },
