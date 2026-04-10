@@ -1,16 +1,19 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Mascot from "./Mascot";
+import CameraPreview from "./CameraPreview";
+import type { useEyeTracking } from "@/hooks/useEyeTracking";
 
 interface CalibrationScreenProps {
   onComplete: () => void;
+  eyeTracking: ReturnType<typeof useEyeTracking>;
 }
 
 const STAR_POSITIONS = [
-  { x: 15, y: 15, label: "top-left" },
-  { x: 85, y: 15, label: "top-right" },
-  { x: 50, y: 50, label: "center" },
-  { x: 15, y: 85, label: "bottom-left" },
-  { x: 85, y: 85, label: "bottom-right" },
+  { x: 15, y: 15, label: "top-left", normX: 0.15, normY: 0.15 },
+  { x: 85, y: 15, label: "top-right", normX: 0.85, normY: 0.15 },
+  { x: 50, y: 50, label: "center", normX: 0.5, normY: 0.5 },
+  { x: 15, y: 85, label: "bottom-left", normX: 0.15, normY: 0.85 },
+  { x: 85, y: 85, label: "bottom-right", normX: 0.85, normY: 0.85 },
 ];
 
 const MASCOT_MESSAGES = [
@@ -21,9 +24,11 @@ const MASCOT_MESSAGES = [
   "Perfect! Let's read! 📖",
 ];
 
-const CalibrationScreen = ({ onComplete }: CalibrationScreenProps) => {
+const CalibrationScreen = ({ onComplete, eyeTracking }: CalibrationScreenProps) => {
   const [currentStar, setCurrentStar] = useState(-1);
   const [started, setStarted] = useState(false);
+  const [gazeStatus, setGazeStatus] = useState("");
+  const calibrationOffsetsRef = useRef<{ offsetX: number; offsetY: number }[]>([]);
 
   const startCalibration = useCallback(() => {
     setStarted(true);
@@ -34,16 +39,38 @@ const CalibrationScreen = ({ onComplete }: CalibrationScreenProps) => {
     if (!started || currentStar < 0) return;
 
     if (currentStar >= STAR_POSITIONS.length) {
+      // Apply calibration
+      eyeTracking.setCalibration(calibrationOffsetsRef.current);
+      setGazeStatus("Calibration complete! ✅");
       const timer = setTimeout(onComplete, 800);
       return () => clearTimeout(timer);
     }
 
-    const timer = setTimeout(() => {
+    // Capture gaze at this star position after a brief settle delay
+    const captureTimer = setTimeout(async () => {
+      const pos = STAR_POSITIONS[currentStar];
+      const result = await eyeTracking.calibrateAtPoint(pos.normX, pos.normY);
+      if (result) {
+        calibrationOffsetsRef.current.push({
+          offsetX: result.offsetX,
+          offsetY: result.offsetY,
+        });
+        setGazeStatus("👁️ Got it!");
+      } else {
+        setGazeStatus("Couldn't see eyes, moving on...");
+      }
+    }, 600);
+
+    // Advance to next star
+    const advanceTimer = setTimeout(() => {
       setCurrentStar((prev) => prev + 1);
     }, 1200);
 
-    return () => clearTimeout(timer);
-  }, [currentStar, started, onComplete]);
+    return () => {
+      clearTimeout(captureTimer);
+      clearTimeout(advanceTimer);
+    };
+  }, [currentStar, started, onComplete, eyeTracking]);
 
   if (!started) {
     return (
@@ -56,6 +83,15 @@ const CalibrationScreen = ({ onComplete }: CalibrationScreenProps) => {
             We need to set up the eye tracker! Follow each star with your eyes as it appears.
           </p>
         </div>
+
+        {/* Camera preview during pre-calibration */}
+        <div className="flex items-center gap-4">
+          <CameraPreview videoElement={eyeTracking.videoRef.current} faceDetected={eyeTracking.faceDetected} />
+          <span className="text-sm text-muted-foreground">
+            {eyeTracking.faceDetected ? "✅ Face detected!" : "👀 Position your face in the camera"}
+          </span>
+        </div>
+
         <Mascot message="Follow the stars with your eyes!" />
         <button
           onClick={startCalibration}
@@ -71,13 +107,21 @@ const CalibrationScreen = ({ onComplete }: CalibrationScreenProps) => {
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
-      {/* Progress */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
+      {/* Progress + status */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2">
         <div className="bg-card rounded-full px-4 py-2 shadow-md">
           <span className="text-base font-bold text-foreground">
             {done ? "✅ Done!" : `Star ${currentStar + 1} of ${STAR_POSITIONS.length}`}
           </span>
         </div>
+        {gazeStatus && (
+          <span className="text-sm text-muted-foreground animate-fade-in-up">{gazeStatus}</span>
+        )}
+      </div>
+
+      {/* Camera preview */}
+      <div className="absolute top-4 right-4 z-10">
+        <CameraPreview videoElement={eyeTracking.videoRef.current} faceDetected={eyeTracking.faceDetected} />
       </div>
 
       {/* Stars */}
