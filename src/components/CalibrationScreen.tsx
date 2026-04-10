@@ -6,6 +6,7 @@ import type { useEyeTracking } from "@/hooks/useEyeTracking";
 interface CalibrationScreenProps {
   onComplete: () => void;
   eyeTracking: ReturnType<typeof useEyeTracking>;
+  demoMode?: boolean;
 }
 
 const STAR_POSITIONS = [
@@ -24,7 +25,7 @@ const MASCOT_MESSAGES = [
   "Perfect! Let's read! 📖",
 ];
 
-const CalibrationScreen = ({ onComplete, eyeTracking }: CalibrationScreenProps) => {
+const CalibrationScreen = ({ onComplete, eyeTracking, demoMode = false }: CalibrationScreenProps) => {
   const [currentStar, setCurrentStar] = useState(-1);
   const [started, setStarted] = useState(false);
   const [gazeStatus, setGazeStatus] = useState("");
@@ -35,33 +36,37 @@ const CalibrationScreen = ({ onComplete, eyeTracking }: CalibrationScreenProps) 
     setCurrentStar(0);
   }, []);
 
+  const skipCalibration = useCallback(() => {
+    onComplete();
+  }, [onComplete]);
+
   useEffect(() => {
     if (!started || currentStar < 0) return;
 
     if (currentStar >= STAR_POSITIONS.length) {
-      // Apply calibration
-      eyeTracking.setCalibration(calibrationOffsetsRef.current);
+      if (!demoMode) {
+        eyeTracking.setCalibration(calibrationOffsetsRef.current);
+      }
       setGazeStatus("Calibration complete! ✅");
       const timer = setTimeout(onComplete, 800);
       return () => clearTimeout(timer);
     }
 
-    // Capture gaze at this star position after a brief settle delay
     const captureTimer = setTimeout(async () => {
-      const pos = STAR_POSITIONS[currentStar];
-      const result = await eyeTracking.calibrateAtPoint(pos.normX, pos.normY);
-      if (result) {
-        calibrationOffsetsRef.current.push({
-          offsetX: result.offsetX,
-          offsetY: result.offsetY,
-        });
-        setGazeStatus("👁️ Got it!");
+      if (demoMode) {
+        setGazeStatus("👁️ Got it! (demo)");
       } else {
-        setGazeStatus("Couldn't see eyes, moving on...");
+        const pos = STAR_POSITIONS[currentStar];
+        const result = await eyeTracking.calibrateAtPoint(pos.normX, pos.normY);
+        if (result) {
+          calibrationOffsetsRef.current.push({ offsetX: result.offsetX, offsetY: result.offsetY });
+          setGazeStatus("👁️ Got it!");
+        } else {
+          setGazeStatus("Couldn't see eyes, moving on...");
+        }
       }
     }, 600);
 
-    // Advance to next star
     const advanceTimer = setTimeout(() => {
       setCurrentStar((prev) => prev + 1);
     }, 1200);
@@ -70,35 +75,54 @@ const CalibrationScreen = ({ onComplete, eyeTracking }: CalibrationScreenProps) 
       clearTimeout(captureTimer);
       clearTimeout(advanceTimer);
     };
-  }, [currentStar, started, onComplete, eyeTracking]);
+  }, [currentStar, started, onComplete, eyeTracking, demoMode]);
 
   if (!started) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 gap-8">
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 gap-6">
         <div className="text-center space-y-4 animate-fade-in-up">
-          <h1 className="text-3xl sm:text-4xl font-bold text-primary font-display">
+          <h1 className="text-2xl sm:text-4xl font-bold text-primary font-display">
             ⭐ Eye Calibration ⭐
           </h1>
-          <p className="text-lg sm:text-xl text-muted-foreground max-w-md">
-            We need to set up the eye tracker! Follow each star with your eyes as it appears.
+          <p className="text-base sm:text-xl text-muted-foreground max-w-md">
+            Follow each star with your eyes as it appears on screen.
           </p>
         </div>
 
-        {/* Camera preview during pre-calibration */}
-        <div className="flex items-center gap-4">
-          <CameraPreview videoElement={eyeTracking.videoRef.current} faceDetected={eyeTracking.faceDetected} />
-          <span className="text-sm text-muted-foreground">
-            {eyeTracking.faceDetected ? "✅ Face detected!" : "👀 Position your face in the camera"}
-          </span>
-        </div>
+        {!demoMode && (
+          <div className="flex items-center gap-4">
+            <CameraPreview videoElement={eyeTracking.videoRef.current} faceDetected={eyeTracking.faceDetected} />
+            <span className="text-sm text-muted-foreground">
+              {eyeTracking.faceDetected ? "✅ Face detected!" : "👀 Position your face in the camera"}
+            </span>
+          </div>
+        )}
+
+        {demoMode && (
+          <div className="bg-secondary/15 border border-secondary/30 rounded-2xl px-4 py-3 text-center">
+            <p className="text-sm font-bold text-secondary">🎮 Demo Mode</p>
+            <p className="text-xs text-muted-foreground">Camera disabled — using simulated data</p>
+          </div>
+        )}
 
         <Mascot message="Follow the stars with your eyes!" />
-        <button
-          onClick={startCalibration}
-          className="mt-4 px-8 py-4 bg-primary text-primary-foreground rounded-2xl text-xl font-bold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 min-h-[56px]"
-        >
-          I'm Ready! 🌟
-        </button>
+
+        <div className="flex flex-col gap-3 items-center">
+          <button
+            onClick={startCalibration}
+            className="px-8 py-4 bg-primary text-primary-foreground rounded-2xl text-lg sm:text-xl font-bold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 min-h-[56px]"
+          >
+            I'm Ready! 🌟
+          </button>
+          {demoMode && (
+            <button
+              onClick={skipCalibration}
+              className="text-sm text-muted-foreground underline hover:text-foreground transition-colors"
+            >
+              Skip calibration
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -110,7 +134,7 @@ const CalibrationScreen = ({ onComplete, eyeTracking }: CalibrationScreenProps) 
       {/* Progress + status */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2">
         <div className="bg-card rounded-full px-4 py-2 shadow-md">
-          <span className="text-base font-bold text-foreground">
+          <span className="text-sm sm:text-base font-bold text-foreground">
             {done ? "✅ Done!" : `Star ${currentStar + 1} of ${STAR_POSITIONS.length}`}
           </span>
         </div>
@@ -120,20 +144,18 @@ const CalibrationScreen = ({ onComplete, eyeTracking }: CalibrationScreenProps) 
       </div>
 
       {/* Camera preview */}
-      <div className="absolute top-4 right-4 z-10">
-        <CameraPreview videoElement={eyeTracking.videoRef.current} faceDetected={eyeTracking.faceDetected} />
-      </div>
+      {!demoMode && (
+        <div className="absolute top-4 right-4 z-10">
+          <CameraPreview videoElement={eyeTracking.videoRef.current} faceDetected={eyeTracking.faceDetected} />
+        </div>
+      )}
 
       {/* Stars */}
       {STAR_POSITIONS.map((pos, i) => (
         <div
           key={pos.label}
           className="absolute transition-all duration-300"
-          style={{
-            left: `${pos.x}%`,
-            top: `${pos.y}%`,
-            transform: "translate(-50%, -50%)",
-          }}
+          style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: "translate(-50%, -50%)" }}
         >
           <span
             className={`text-4xl sm:text-5xl inline-block transition-all duration-300 ${
@@ -149,24 +171,18 @@ const CalibrationScreen = ({ onComplete, eyeTracking }: CalibrationScreenProps) 
         </div>
       ))}
 
-      {/* Mascot at bottom */}
-      <div className="absolute bottom-6 left-6">
-        <Mascot
-          message={MASCOT_MESSAGES[Math.min(currentStar, MASCOT_MESSAGES.length - 1)] || "Great!"}
-        />
+      {/* Mascot */}
+      <div className="absolute bottom-6 left-4 sm:left-6">
+        <Mascot message={MASCOT_MESSAGES[Math.min(currentStar, MASCOT_MESSAGES.length - 1)] || "Great!"} />
       </div>
 
       {/* Progress dots */}
-      <div className="absolute bottom-6 right-6 flex gap-2">
+      <div className="absolute bottom-6 right-4 sm:right-6 flex gap-2">
         {STAR_POSITIONS.map((_, i) => (
           <div
             key={i}
             className={`w-3 h-3 rounded-full transition-all duration-300 ${
-              i < currentStar
-                ? "bg-success"
-                : i === currentStar
-                ? "bg-primary animate-pulse"
-                : "bg-muted"
+              i < currentStar ? "bg-success" : i === currentStar ? "bg-primary animate-pulse" : "bg-muted"
             }`}
           />
         ))}
