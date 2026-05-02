@@ -10,9 +10,22 @@
       ]
     },
     "skipLibCheck": true,
-    "strictNullChecks": false
+    "strictNullChecks": false,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true
   },
   "files": [],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    ".git",
+    "coverage",
+    "**/*.spec.ts",
+    "**/*.test.ts"
+  ],
+  "include": [],
   "references": [
     {
       "path": "./tsconfig.app.json"

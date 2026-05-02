@@ -19,17 +19,86 @@ const Index = () => {
   useEffect(() => {
     if (demoMode) return;
     const init = async () => {
-      setLoadingStep(1);
-      setLoadingMessage("Loading eye tracking model... 🧠");
-      await eyeTracking.loadModel();
+      try {
+        setLoadingStep(1);
+        setLoadingMessage("Loading eye tracking model... 🧠");
+        console.log("\n🚀 === INITIALIZATION STARTED ===");
+        console.log("Step 1: Loading FaceMesh model...");
+        await eyeTracking.loadModel();
+        console.log("Step 1: ✅ Model loaded, modelLoaded state:", eyeTracking.modelLoaded);
+        console.log("Step 1: Detector ref exists?", eyeTracking ? "checking..." : "hook not ready");
 
-      setLoadingStep(2);
-      setLoadingMessage("Starting camera... 📹");
-      await eyeTracking.startCamera();
+        setLoadingStep(2);
+        setLoadingMessage("Starting camera... 📹");
+        console.log("Step 2: Starting camera...");
+        const stream = await eyeTracking.startCamera();
+        if (!stream) {
+          throw new Error("Camera stream is null");
+        }
+        console.log("Step 2: ✅ Camera started");
 
-      setLoadingStep(3);
-      setLoadingMessage("Ready! ✨");
-      setTimeout(() => setPhase("calibration"), 500);
+        // Give the video a moment to start streaming
+        console.log("Waiting for video to stabilize...");
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        // Verify detection is working with comprehensive diagnostics
+        setLoadingStep(3);
+        setLoadingMessage("Verifying system... ✓");
+        let detectionWorking = false;
+        let lastTestResult: any = null;
+        
+        for (let attempt = 0; attempt < 3; attempt++) {
+          console.log(`\n[Test Attempt ${attempt + 1}] Calling testDetection()...`);
+          const testResult = await eyeTracking.testDetection();
+          lastTestResult = testResult;
+          console.log("testDetection() result:", testResult);
+          
+          // Check for face detection
+          if (testResult?.success && testResult?.faceCount > 0) {
+            detectionWorking = true;
+            console.log("✅✅✅ FACE DETECTED - SUCCESS!");
+            break;
+          }
+          
+          if (attempt < 2) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        }
+
+        console.log("\n═══ FINAL DETECTION STATUS ═══");
+        if (detectionWorking) {
+          console.log("✅✅✅ DETECTION WORKING - Ready for real tracking!");
+        } else {
+          console.error("❌ FACE DETECTION FAILED");
+          if (lastTestResult?.timingInfo) {
+            const { initialTime, afterRAFTime } = lastTestResult.timingInfo;
+            if (initialTime === afterRAFTime) {
+              console.error("🔴 ROOT CAUSE: Video currentTime not advancing");
+              console.error("   MediaStream isn't properly updating the video element");
+              console.error("   This is a browser/MediaStream issue");
+            } else {
+              console.error("⚠️ Video IS advancing but model can't find your face");
+              console.error("\n🎥 LOOK FOR: Green-bordered video box in BOTTOM-RIGHT corner");
+              console.error("\n🔧 TROUBLESHOOTING:");
+              console.error("  1. Is your face VISIBLE in the green video box?");
+              console.error("  2. Check lighting - room should be WELL-LIT (no backlight)");
+              console.error("  3. Face should be FRONT-FACING (not sideways/tilted)");
+              console.error("  4. Try moving CLOSER to camera (15-30cm away)");
+              console.error("  5. Remove glasses/sunglasses if possible");
+              console.error("  6. Refresh page and try again (F5)");
+            }
+          } else {
+            console.error("Could not determine root cause - check video permissions");
+          }
+        }
+
+        setLoadingStep(3);
+        setLoadingMessage("Ready! ✨");
+        setTimeout(() => setPhase("calibration"), 500);
+      } catch (error) {
+        console.error("❌ Init error:", error);
+        setLoadingMessage("Error: " + String(error));
+      }
     };
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps

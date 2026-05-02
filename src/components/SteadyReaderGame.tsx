@@ -129,7 +129,10 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
       if (result) {
         noFaceCountRef.current = 0;
         setNoFaceWarning(false);
-        if (paused) setPaused(false);
+        if (paused) {
+          console.log("Face re-detected, resuming game");
+          setPaused(false);
+        }
 
         const point: GazeDataPoint = {
           timestamp: elapsed,
@@ -148,10 +151,17 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
         setPointsCollected(gazeDataRef.current.length);
       } else {
         noFaceCountRef.current += 1;
-        setNoFaceWarning(true);
-
-        // Auto-pause after 3 consecutive no-face detections (600ms)
-        if (noFaceCountRef.current >= 3) {
+        
+        // Only show warning and pause after 5+ consecutive no-face detections (1 second)
+        // This prevents false pauses from occasional detection hiccups
+        const NO_FACE_PAUSE_THRESHOLD = 5;
+        
+        if (noFaceCountRef.current >= 2) {
+          setNoFaceWarning(true);
+        }
+        
+        if (noFaceCountRef.current >= NO_FACE_PAUSE_THRESHOLD) {
+          console.warn("No face detected for > 1 second, pausing game");
           setPaused(true);
         }
 
@@ -177,14 +187,21 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
   // Auto-resume when face detected again
   useEffect(() => {
     if (!paused || demoMode) return;
+    
     const check = setInterval(async () => {
       const result = await eyeTracking.detectFace();
       if (result) {
-        noFaceCountRef.current = 0;
-        setNoFaceWarning(false);
-        setPaused(false);
+        // Check multiple times to confirm face is stable
+        const confirmResult = await eyeTracking.detectFace();
+        if (confirmResult) {
+          noFaceCountRef.current = 0;
+          setNoFaceWarning(false);
+          console.log("Face confirmed after pause, resuming");
+          setPaused(false);
+        }
       }
-    }, 500);
+    }, 300); // Check more frequently (was 500ms)
+    
     return () => clearInterval(check);
   }, [paused, demoMode, eyeTracking]);
 
