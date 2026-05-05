@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { useWebSocketConnection } from '../hooks/useWebSocketConnection';
+import { stompClient } from '../api/wsClient';
 import { useGazeStream } from '../hooks/useGazeStream';
 import { useServerResponses } from '../hooks/useServerResponses';
 import { useGazeStore } from '../store/gazeStore';
@@ -15,7 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { AlertCircle, Play, Square } from 'lucide-react';
 
 export function SessionControls() {
-  const { status } = useWebSocketConnection();
+  const { status, connect } = useWebSocketConnection();
   const store = useGazeStore();
   const session = store.session;
 
@@ -36,6 +37,11 @@ export function SessionControls() {
 
     try {
       if (status !== 'CONNECTED') {
+        // Try to connect (will refresh token if needed)
+        await connect();
+      }
+
+      if (status !== 'CONNECTED' && !stompClient.isConnected()) {
         throw new Error('WebSocket not connected');
       }
 

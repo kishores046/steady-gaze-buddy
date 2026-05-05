@@ -1,86 +1,79 @@
-/**
- * PHASE 5: useGazeStream Hook
- * 60Hz gaze frame streaming + client-side throttling
- */
-
 import { useRef, useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { stompClient } from '../api/wsClient';
 import { useGazeStore } from '../store/gazeStore';
 import { GazeFrameDto } from '../api/types';
+import { GazeDataPoint } from '../types/gaze';
 
 interface UseGazeStreamOptions {
   enabled?: boolean;
-  targetFps?: number;
-  onFrame?: (frame: GazeFrameDto) => void;
   onError?: (error: Error) => void;
 }
 
-const DEFAULT_TARGET_FPS = 60;
-const FRAME_TIME_MS = 1000 / DEFAULT_TARGET_FPS;
-
 /**
- * Hook for streaming gaze frames to backend at configurable FPS
- * Uses requestAnimationFrame for smooth timing, with fallback to setInterval
+ * Hook for event-based streaming of gaze frames to backend.
+ * Streams data dynamically only when new frames are provided via streamFrame.
+ */
+/**
+ * PHASE 3: Real-time gaze frame streaming via STOMP
+ * 
+ * CRITICAL: Only streams frames AFTER:
+ * 1. WebSocket is CONNECTED
+ * 2. Session is STARTED
+ * 3. streamFrame() is called with real gaze data
  */
 export function useGazeStream({
   enabled = false,
-  targetFps = DEFAULT_TARGET_FPS,
-  onFrame,
   onError,
 }: UseGazeStreamOptions = {}) {
-  const frameIntervalMs = 1000 / targetFps;
-  const rafRef = useRef<number>();
-  const lastFrameTimeRef = useRef<number>(0);
   const frameCountRef = useRef<number>(0);
   const isStreamingRef = useRef<boolean>(false);
-
   const store = useGazeStore();
 
   /**
-   * Create a gaze frame DTO from raw gaze data
-   * In production, this would come from your gaze tracking pipeline
+   * Send a single real gaze frame to backend via STOMP
+   * 
+   * Guards:
+   * - Must be streaming (started)
+   * - WebSocket must be connected
+   * - Session must exist and be started
    */
-  const createGazeFrame = useCallback((): GazeFrameDto => {
-    const now = Date.now();
-    const sessionStartTime = store.session?.startTime || now;
+  const streamFrame = useCallback((point: GazeDataPoint) => {
+    // Guard 1: Check streaming state
+    if (!isStreamingRef.current) {
+      return; // Not started yet, silently ignore
+    }
 
-    return {
-      frameId: uuidv4(),
-      timestamp: now,
-      gazeX: Math.random(), // Replace with actual gaze tracking
-      gazeY: Math.random(), // Replace with actual gaze tracking
-      confidence: 0.85 + Math.random() * 0.15, // Simulate confidence
-      pupilSize: 3.0 + Math.random() * 0.5,
-      validFrame: true,
-      headRotationX: 0,
-      headRotationY: 0,
-      headRotationZ: 0,
-      velocityX: 0,
-      velocityY: 0,
-    };
-  }, [store.session?.startTime]);
-
-  /**
-   * Send frame to backend via STOMP
-   */
-  const sendFrame = useCallback((frame: GazeFrameDto) => {
-    // Guard: check connection
+    // Guard 2: Check WebSocket connection
     if (!stompClient.isConnected()) {
+      console.warn('[useGazeStream] ⚠️ WebSocket disconnected, dropping frame');
+      store.incrementDebugMetric('framesDropped');
       return;
     }
 
-    // Guard: check session
+    // Guard 3: Check session exists
     const sessionId = store.session?.sessionId;
     if (!sessionId) {
+      console.warn('[useGazeStream] ⚠️ No active session, dropping frame');
+      store.incrementDebugMetric('framesDropped');
       return;
     }
 
-    // Guard: check rate limit
+    // Guard 4: Check rate limit
     if (store.metrics.rateLimited) {
       store.incrementDebugMetric('framesDropped');
       return;
     }
+
+    // Convert real tracking point to backend DTO
+    const frame: GazeFrameDto = {
+      frameId: uuidv4(),
+      timestamp: Date.now(),
+      gazeX: point.gazeX,
+      gazeY: point.gazeY,
+      confidence: point.confidence || 0,
+      validFrame: point.faceDetected,
+    };
 
     // Publish to STOMP
     try {
@@ -92,74 +85,58 @@ export function useGazeStream({
       store.incrementFrameCount();
       frameCountRef.current++;
 
-      // Callback
-      onFrame?.(frame);
+      // Log every 30 frames
+      if (frameCountRef.current % 30 === 0) {
+        store.calculateFramesPerSecond();
+        console.log('[useGazeStream] 💯 Streamed', frameCountRef.current, 'frames');
+      }
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       onError?.(err);
-      console.error('[useGazeStream] Send error:', err);
+      console.error('[useGazeStream] ❌ Send error:', err);
     }
-  }, [store, onFrame, onError]);
+  }, [store, onError]);
 
   /**
-   * Main streaming loop using requestAnimationFrame
-   */
-  const frameLoop = useCallback(() => {
-    if (!isStreamingRef.current) {
-      return;
-    }
-
-    const now = performance.now();
-    const elapsed = now - lastFrameTimeRef.current;
-
-    // Throttle to target FPS
-    if (elapsed >= frameIntervalMs) {
-      lastFrameTimeRef.current = now - (elapsed % frameIntervalMs);
-
-      const frame = createGazeFrame();
-      sendFrame(frame);
-    }
-
-    // Update FPS calculation periodically
-    if (frameCountRef.current % 60 === 0) {
-      store.calculateFramesPerSecond();
-    }
-
-    rafRef.current = requestAnimationFrame(frameLoop);
-  }, [frameIntervalMs, createGazeFrame, sendFrame, store]);
-
-  /**
-   * Start streaming
+   * Start streaming (enables streamFrame)
+   * 
+   * Prerequisites:
+   * - WebSocket must be CONNECTED
+   * - Session must exist
    */
   const start = useCallback(async () => {
     if (isStreamingRef.current) {
-      console.warn('[useGazeStream] Already streaming');
+      console.log('[useGazeStream] ⚠️ Already streaming');
       return;
     }
 
-    // Verify connection and session
+    // Verify connection
     if (!stompClient.isConnected()) {
       const error = new Error('WebSocket not connected');
       onError?.(error);
+      console.error('[useGazeStream] ❌ Start failed: WebSocket not connected');
       throw error;
     }
+    console.log('[useGazeStream] ✓ WebSocket connected');
 
-    if (!store.session?.sessionId) {
+    // Verify session exists
+    const currentSession = useGazeStore.getState().session;
+    if (!currentSession?.sessionId) {
       const error = new Error('No active session');
       onError?.(error);
+      console.error('[useGazeStream] ❌ Start failed: No active session');
       throw error;
     }
+    console.log('[useGazeStream] ✓ Session active:', currentSession.sessionId);
 
     isStreamingRef.current = true;
-    lastFrameTimeRef.current = performance.now();
     frameCountRef.current = 0;
 
-    console.log('[useGazeStream] Started at', targetFps, 'FPS');
-    rafRef.current = requestAnimationFrame(frameLoop);
-  }, [frameLoop, targetFps, store.session?.sessionId, onError]);
+    console.log('[useGazeStream] 🚀 Event-based streaming STARTED');
+  }, [onError]);
 
   /**
-   * Stop streaming
+   * Stop streaming (disables streamFrame)
    */
   const stop = useCallback(() => {
     if (!isStreamingRef.current) {
@@ -167,15 +144,9 @@ export function useGazeStream({
     }
 
     isStreamingRef.current = false;
-
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = undefined;
-    }
-
-    store.calculateFramesPerSecond();
-    console.log('[useGazeStream] Stopped, sent', frameCountRef.current, 'frames');
-  }, [store]);
+    useGazeStore.getState().calculateFramesPerSecond();
+    console.log('[useGazeStream] 🛑 Stopped streaming. Sent', frameCountRef.current, 'frames total');
+  }, []);
 
   /**
    * Cleanup on unmount
@@ -204,6 +175,7 @@ export function useGazeStream({
     frameCount: frameCountRef.current,
     start,
     stop,
+    streamFrame,
   };
 }
 

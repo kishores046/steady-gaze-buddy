@@ -25,7 +25,8 @@ export function useWebSocketConnection({
   onDisconnected,
   onError,
 }: UseWebSocketConnectionOptions = {}) {
-  const store = useGazeStore();
+  // Only subscribe to connectionStatus instead of the entire store
+  const connectionStatus = useGazeStore(state => state.connectionStatus);
   const statusUnsubscribeRef = useRef<(() => void) | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -34,7 +35,8 @@ export function useWebSocketConnection({
    */
   const handleStatusChange = useCallback(
     (status: ConnectionStatus) => {
-      store.setConnectionStatus(status);
+      // Use getState() to avoid dependency cycles
+      useGazeStore.getState().setConnectionStatus(status);
 
       switch (status) {
         case 'CONNECTED':
@@ -68,29 +70,54 @@ export function useWebSocketConnection({
           break;
       }
     },
-    [store, onConnected, onDisconnected, onError]
+    [onConnected, onDisconnected, onError] // store removed from dependencies
   );
 
   /**
-   * Connect to WebSocket
+   * Connect to WebSocket and wait until CONNECTED
    */
   const connect = useCallback(async () => {
     try {
       // Ensure authenticated
       if (!authService.isAuthenticated()) {
+        console.error('[useWebSocketConnection] ❌ Not authenticated');
         throw new Error('Not authenticated - please log in first');
       }
 
-      store.setConnectionStatus('CONNECTING');
+      console.log('[useWebSocketConnection] 🔌 Initiating WebSocket connect');
+      useGazeStore.getState().setConnectionStatus('CONNECTING');
       await stompClient.connect();
-      store.incrementDebugMetric('reconnectCount');
+      
+      // Wait until actually connected (not just CONNECTING)
+      await new Promise<void>((resolve, reject) => {
+        const maxWait = 10000; // 10 second timeout
+        const startTime = Date.now();
+        
+        const checkInterval = setInterval(() => {
+          if (stompClient.isConnected()) {
+            clearInterval(checkInterval);
+            console.log('[useWebSocketConnection] ✅ WebSocket CONNECTED');
+            resolve();
+            return;
+          }
+          
+          if (Date.now() - startTime > maxWait) {
+            clearInterval(checkInterval);
+            console.error('[useWebSocketConnection] ❌ Connection timeout');
+            reject(new Error('WebSocket connection timeout'));
+          }
+        }, 50);
+      });
+      
+      useGazeStore.getState().incrementDebugMetric('reconnectCount');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      store.setConnectionStatus('ERROR');
+      console.error('[useWebSocketConnection] ❌ Connection failed:', err.message);
+      useGazeStore.getState().setConnectionStatus('ERROR');
       onError?.(err);
       throw err;
     }
-  }, [store, onError]);
+  }, [onError]);
 
   /**
    * Disconnect from WebSocket
@@ -100,8 +127,8 @@ export function useWebSocketConnection({
       clearTimeout(reconnectTimeoutRef.current);
     }
     stompClient.disconnect();
-    store.setConnectionStatus('DISCONNECTED');
-  }, [store]);
+    useGazeStore.getState().setConnectionStatus('DISCONNECTED');
+  }, []);
 
   /**
    * Force reconnect
@@ -134,7 +161,7 @@ export function useWebSocketConnection({
    * Auto-connect on mount if enabled
    */
   useEffect(() => {
-    if (autoConnect && !stompClient.isConnected()) {
+    if (autoConnect && authService.isAuthenticated() && !stompClient.isConnected()) {
       connect().catch(err => {
         console.error('[useWebSocketConnection] Auto-connect failed:', err);
       });
@@ -147,7 +174,7 @@ export function useWebSocketConnection({
   }, [autoConnect, connect]);
 
   return {
-    status: store.connectionStatus,
+    status: connectionStatus,
     isConnected: stompClient.isConnected(),
     connect,
     disconnect,

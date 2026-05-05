@@ -3,6 +3,10 @@ import CameraPreview from "./CameraPreview";
 import Mascot from "./Mascot";
 import type { GazeDataPoint, SessionData } from "@/types/gaze";
 import type { useEyeTracking } from "@/hooks/useEyeTracking";
+import { useWebSocketConnection } from "@/hooks/useWebSocketConnection";
+import { useGazeStream } from "@/hooks/useGazeStream";
+import SessionManager from "@/api/sessionManager";
+import { stompClient } from "@/api/wsClient";
 
 interface SteadyReaderGameProps {
   onComplete: (data: SessionData) => void;
@@ -40,6 +44,28 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
   const trackingIntervalRef = useRef<number>(0);
   const noFaceCountRef = useRef(0);
 
+  // STOMP & Streaming Integration
+  const { status, connect } = useWebSocketConnection();
+  const { streamFrame, start: startStream, stop: stopStream } = useGazeStream();
+  const [mlScore, setMlScore] = useState<number | null>(null);
+
+  // Connect WebSocket on Mount
+  // Do not auto-connect on mount. Connection happens when session starts.
+
+  // Subscribe to ML results dynamically
+  useEffect(() => {
+    if (status !== 'CONNECTED') return;
+    const unsub = stompClient.subscribe('/user/queue/result', (message) => {
+      try {
+        const payload = JSON.parse(message.body);
+        if (payload.riskScore !== undefined) {
+          setMlScore(payload.riskScore);
+        }
+      } catch(e) { console.warn("Failed to parse ML Result"); }
+    });
+    return unsub;
+  }, [status]);
+
   // Timer
   useEffect(() => {
     if (!started || timeLeft <= 0 || paused) return;
@@ -59,6 +85,11 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
   useEffect(() => {
     if (started && timeLeft === 0) {
       if (trackingIntervalRef.current) clearInterval(trackingIntervalRef.current);
+      
+      // Stop backend session
+      stopStream();
+      SessionManager.endSession().catch(console.error);
+
       const session: SessionData = {
         startTime: startTimeRef.current,
         endTime: Date.now(),
@@ -66,12 +97,10 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
         totalPointsTarget: TARGET_POINTS,
         duration: DURATION,
       };
-      try {
-        localStorage.setItem("dyslexia_session_latest", JSON.stringify(session));
-      } catch { /* ignore */ }
+      
       onComplete(session);
     }
-  }, [timeLeft, started, onComplete]);
+  }, [timeLeft, started, onComplete, stopStream]);
 
   // Mascot messages
   useEffect(() => {
@@ -94,7 +123,7 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
     return () => clearInterval(frame);
   }, [started, timeLeft, paused]);
 
-  // Gaze tracking / demo simulation
+  // Gaze tracking
   useEffect(() => {
     if (!started || timeLeft <= 0) return;
 
@@ -105,22 +134,7 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
       const wordIndex = Math.floor((scrollRef.current / 10) % STORY_WORDS.length);
 
       if (demoMode) {
-        // Simulate gaze data
-        const point: GazeDataPoint = {
-          timestamp: elapsed,
-          gazeX: 0.3 + Math.random() * 0.4,
-          gazeY: 0.45 + Math.random() * 0.1,
-          leftIrisX: 150 + Math.random() * 20,
-          leftIrisY: 120 + Math.random() * 10,
-          rightIrisX: 200 + Math.random() * 20,
-          rightIrisY: 121 + Math.random() * 10,
-          textScrollOffset: scrollRef.current,
-          currentWord: STORY_WORDS[wordIndex] || "",
-          faceDetected: true,
-          confidence: 0.85 + Math.random() * 0.15,
-        };
-        gazeDataRef.current.push(point);
-        setPointsCollected(gazeDataRef.current.length);
+        // We do not support demo mode generating synthetic data to backend
         return;
       }
 
@@ -149,11 +163,12 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
         };
         gazeDataRef.current.push(point);
         setPointsCollected(gazeDataRef.current.length);
+        
+        // Push actual point to ML pipeline
+        streamFrame(point);
       } else {
         noFaceCountRef.current += 1;
         
-        // Only show warning and pause after 5+ consecutive no-face detections (1 second)
-        // This prevents false pauses from occasional detection hiccups
         const NO_FACE_PAUSE_THRESHOLD = 5;
         
         if (noFaceCountRef.current >= 2) {
@@ -177,12 +192,14 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
         };
         gazeDataRef.current.push(point);
         setPointsCollected(gazeDataRef.current.length);
+        
+        streamFrame(point);
       }
     }, CAPTURE_INTERVAL);
 
     trackingIntervalRef.current = interval as unknown as number;
     return () => clearInterval(interval);
-  }, [started, timeLeft, eyeTracking, demoMode, paused]);
+  }, [started, timeLeft, eyeTracking, demoMode, paused, streamFrame]);
 
   // Auto-resume when face detected again
   useEffect(() => {
@@ -205,12 +222,52 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
     return () => clearInterval(check);
   }, [paused, demoMode, eyeTracking]);
 
-  const handleStart = useCallback(() => {
+  const handleStart = useCallback(async () => {
+    // CRITICAL: Enforce proper session lifecycle
+    // 1. Connect WebSocket (if not already)
+    // 2. Create session in backend
+    // 3. Start streaming frames
+    
+    console.log('[SteadyReaderGame] 🎮 Game START requested');
+    
+    try {
+      // Step 1: Ensure WebSocket is CONNECTED
+      if (!stompClient.isConnected()) {
+        console.log('[SteadyReaderGame] 🔌 WebSocket not connected, connecting now...');
+        try {
+          await connect();
+          // Double-check connection
+          if (!stompClient.isConnected()) {
+            throw new Error('WebSocket connection failed');
+          }
+        } catch (connectErr) {
+          console.error('[SteadyReaderGame] ❌ Failed to connect WebSocket:', connectErr);
+          throw connectErr;
+        }
+      }
+      console.log('[SteadyReaderGame] ✓ WebSocket CONNECTED');
+
+      // Step 2: Start session in backend
+      console.log('[SteadyReaderGame] 📝 Creating session in backend...');
+      const sessionId = await SessionManager.startSession("steady-reader", { userId: "current-user" });
+      console.log('[SteadyReaderGame] ✓ Session created:', sessionId);
+
+      // Step 3: Start frame streaming
+      console.log('[SteadyReaderGame] 📤 Starting frame stream...');
+      await startStream();
+      console.log('[SteadyReaderGame] ✓ Frame streaming started');
+      
+      console.log('[SteadyReaderGame] ✅ GAME READY - session is live');
+    } catch (e) {
+      console.error('[SteadyReaderGame] ❌ Failed to start game:', e);
+      throw e;
+    }
+
     startTimeRef.current = Date.now();
     scrollRef.current = 0;
     gazeDataRef.current = [];
     setStarted(true);
-  }, []);
+  }, [connect, startStream]);
 
   const timerColor =
     timeLeft > 30 ? "text-success" : timeLeft > 10 ? "text-warning" : "text-destructive";
@@ -284,6 +341,11 @@ const SteadyReaderGame = ({ onComplete, eyeTracking, demoMode = false }: SteadyR
           {noFaceWarning && !paused && (
             <span className="text-xs sm:text-sm text-destructive font-bold animate-pulse">
               Move closer! 📷
+            </span>
+          )}
+          {mlScore !== null && (
+            <span className="ml-2 text-xs sm:text-sm font-bold px-2 py-1 bg-indigo-500/10 text-indigo-500 rounded-full">
+              ML Score: {mlScore}
             </span>
           )}
         </div>

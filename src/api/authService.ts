@@ -4,12 +4,25 @@
  */
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { LoginRequest, LoginResponse, AuthTokens } from './types';
+import { LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, RefreshRequest, RefreshResponse, AuthTokens } from './types';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 // Token storage (memory-first, fallback to localStorage)
 let tokenCache: AuthTokens | null = null;
+
+// Auth Event Bus to sync React state
+type TokenUpdateListener = (tokens: AuthTokens | null) => void;
+const tokenListeners = new Set<TokenUpdateListener>();
+
+export const onTokenUpdate = (listener: TokenUpdateListener): (() => void) => {
+  tokenListeners.add(listener);
+  return () => tokenListeners.delete(listener);
+};
+
+const notifyTokenUpdate = (tokens: AuthTokens | null) => {
+  tokenListeners.forEach(listener => listener(tokens));
+};
 
 export const getStoredTokens = (): AuthTokens | null => {
   // Try memory cache first (preferred)
@@ -31,6 +44,13 @@ export const getStoredTokens = (): AuthTokens | null => {
   return null;
 };
 
+// Helper: mask token for safe debug logging (shows prefix and suffix only)
+export const maskToken = (token: string | null | undefined): string => {
+  if (!token) return '<none>';
+  if (token.length <= 10) return '***';
+  return `${token.slice(0, 8)}...${token.slice(-6)}`;
+};
+
 export const setStoredTokens = (tokens: AuthTokens): void => {
   tokenCache = tokens;
   
@@ -40,6 +60,7 @@ export const setStoredTokens = (tokens: AuthTokens): void => {
   } catch (e) {
     console.warn('Failed to persist tokens to localStorage');
   }
+  notifyTokenUpdate(tokens);
 };
 
 export const clearStoredTokens = (): void => {
@@ -49,6 +70,7 @@ export const clearStoredTokens = (): void => {
   } catch (e) {
     console.warn('Failed to clear tokens from localStorage');
   }
+  notifyTokenUpdate(null);
 };
 
 export const isTokenExpired = (): boolean => {
@@ -90,16 +112,18 @@ export const createAuthAxios = (): AxiosInstance => {
           const tokens = getStoredTokens();
           if (tokens?.refreshToken) {
             // Call refresh endpoint
-            const response = await axios.post<LoginResponse>(
+            const refreshPayload: RefreshRequest = { refreshToken: tokens.refreshToken };
+            const response = await axios.post<RefreshResponse>(
               `${API_BASE_URL}/api/auth/refresh`,
-              { refreshToken: tokens.refreshToken }
+              refreshPayload
             );
 
             if (response.data.accessToken) {
               const newTokens: AuthTokens = {
                 accessToken: response.data.accessToken,
-                refreshToken: response.data.refreshToken || tokens.refreshToken,
-                expiresAt: Date.now() + response.data.expiresIn * 1000,
+                refreshToken: response.data.refreshToken,
+                role: tokens.role, // carry over role
+                expiresAt: response.data.expiresAt,
               };
               setStoredTokens(newTokens);
 
@@ -134,13 +158,27 @@ export const authService = {
       const tokens: AuthTokens = {
         accessToken: response.data.accessToken,
         refreshToken: response.data.refreshToken,
-        expiresAt: Date.now() + response.data.expiresIn * 1000,
+        role: response.data.role,
+        expiresAt: response.data.expiresAt,
       };
 
       setStoredTokens(tokens);
       return tokens;
     } catch (error) {
       console.error('Login failed:', error);
+      throw error;
+    }
+  },
+
+  async register(request: RegisterRequest): Promise<RegisterResponse> {
+    try {
+      const response = await axios.post<RegisterResponse>(
+        `${API_BASE_URL}/api/auth/register`,
+        request
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Registration failed:', error);
       throw error;
     }
   },
@@ -156,15 +194,17 @@ export const authService = {
     }
 
     try {
-      const response = await axios.post<LoginResponse>(
+      const refreshPayload: RefreshRequest = { refreshToken: tokens.refreshToken };
+      const response = await axios.post<RefreshResponse>(
         `${API_BASE_URL}/api/auth/refresh`,
-        { refreshToken: tokens.refreshToken }
+        refreshPayload
       );
 
       const newTokens: AuthTokens = {
         accessToken: response.data.accessToken,
-        refreshToken: response.data.refreshToken || tokens.refreshToken,
-        expiresAt: Date.now() + response.data.expiresIn * 1000,
+        refreshToken: response.data.refreshToken,
+        role: tokens.role, // role might not be returned in refresh
+        expiresAt: response.data.expiresAt,
       };
 
       setStoredTokens(newTokens);

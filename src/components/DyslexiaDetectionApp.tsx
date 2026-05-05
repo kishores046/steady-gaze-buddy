@@ -22,7 +22,7 @@ import { AlertCircle, CheckCircle2 } from 'lucide-react';
  * Demonstrates complete STOMP pipeline integration
  */
 export function DyslexiaDetectionApp() {
-  const { status, isConnected } = useWebSocketConnection({ autoConnect: true });
+  const { status, isConnected } = useWebSocketConnection({ autoConnect: false });
   const store = useGazeStore();
   const { publishFixation, publishSaccade } = useFeaturePublisher();
 
@@ -45,24 +45,7 @@ export function DyslexiaDetectionApp() {
     },
   });
 
-  // Example: Simulate feature detection
-  useEffect(() => {
-    if (!store.session?.isActive) return;
-
-    const interval = setInterval(() => {
-      // Randomly publish features for demo
-      if (Math.random() > 0.7) {
-        publishFixation({
-          duration: 100 + Math.random() * 200,
-          x: Math.random(),
-          y: Math.random(),
-          metadata: { wordIndex: Math.floor(Math.random() * 100) },
-        });
-      }
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, [store.session?.isActive, publishFixation]);
+  // Demo feature generation removed: use real publisher hooks from app logic
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">

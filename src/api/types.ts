@@ -6,20 +6,49 @@
 // ============ AUTH TYPES ============
 
 export interface LoginRequest {
-  username: string;
+  email: string;
   password: string;
 }
 
 export interface LoginResponse {
   accessToken: string;
-  refreshToken?: string;
-  expiresIn: number;
+  refreshToken: string;
   tokenType: string;
+  role: string;
+  expiresAt: number;
+}
+
+export interface RegisterRequest {
+  username: string;
+  email: string;
+  password: string;
+  dateOfBirth: string;
+  gender: 'M' | 'F' | 'O';
+}
+
+export interface RegisterResponse {
+  userId: number;
+  username: string;
+  email: string;
+  role: string;
+  message: string;
+}
+
+export interface RefreshRequest {
+  refreshToken: string;
+}
+
+export interface RefreshResponse {
+  accessToken: string;
+  refreshToken: string;
+  tokenType: string;
+  expiresAt: number;
 }
 
 export interface AuthTokens {
   accessToken: string;
-  refreshToken?: string;
+  refreshToken: string;
+  role: string;
   expiresAt: number;
 }
 
@@ -102,12 +131,19 @@ export interface AckPayload {
 export interface MLResultPayload {
   sessionId: string;
   timestamp: number;
-  frameId: string;
-  riskLevel: 'LOW' | 'MODERATE' | 'HIGH';
-  riskScore: number; // 0-100
-  classification: string;
+  riskLevel?: 'LOW' | 'MODERATE' | 'HIGH';
+  riskScore: number; // 0-1
+  classification: 'LOW' | 'MODERATE' | 'HIGH';
   confidence: number;
-  features: {
+  breakdown?: {
+    ruleScore: number;
+    rfScore: number;
+  };
+  metadata?: {
+    sampleCount: number;
+    duration: number;
+  };
+  features?: {
     fixationStability: number;
     saccadePattern: number;
     readingSpeed: number;
